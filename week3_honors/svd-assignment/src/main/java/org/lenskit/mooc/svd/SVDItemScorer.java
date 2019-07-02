@@ -62,9 +62,17 @@ public class SVDItemScorer extends AbstractItemScorer {
         LongSet itemSet = LongUtils.asLongSet(items);
 
         List<Result> results = new ArrayList<>();
-        // TODO Compute the predictions
-        // TODO Add the predicted offsets to the baseline score
-        // TODO Store the results in 'results'
+
+        // My Code:
+        // Compute the predictions
+        for(Long item : itemSet) {
+            double user_item_pred = userFeatures.ebeMultiply(model.getFeatureWeights()).dotProduct(model.getItemVector(item));
+            // Add the predicted offsets to the baseline score
+            double pred = baseline.getIntercept() + baseline.getUserBias(user) + baseline.getItemBias(item) + user_item_pred;
+            Result r = Results.create(item, pred);
+            // Store the results in 'results'
+            results.add(r);
+        }
 
         return Results.newResultMap(results);
     }
