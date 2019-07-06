@@ -16,17 +16,15 @@ import javax.inject.Provider;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
-class Quartet {
+class Triplet {
     int i;
     long j;
     long k;
-    double l;
 
-    Quartet(int i,long j, long k, double l) {
+    Triplet(int i,long j, long k) {
         this.i = i;
         this.j = j;
         this.k = k;
-        this.l = l;
     }
 
     public boolean equals(Object other)
@@ -39,19 +37,17 @@ class Quartet {
             return false;
         }
 
-        Quartet other_quartet = (Quartet) other;
+        Triplet other_quartet = (Triplet) other;
 
         return this.i == other_quartet.i &&
                 this.j == other_quartet.j &&
-                this.k == other_quartet.k &&
-                this.l == other_quartet.l;
+                this.k == other_quartet.k;
     }
 
     public int hashCode() {
         return (new Integer(this.i)).hashCode() +
                 (new Long(this.j)).hashCode() +
-                (new Long(this.k)).hashCode() +
-                (new Double(this.l)).hashCode();
+                (new Long(this.k)).hashCode();
     }
 
 }
@@ -70,7 +66,7 @@ public class LogisticModelProvider implements Provider<LogisticModel> {
     private final RatingSummary ratingSummary;
     private final int parameterCount;
     private final Random random;
-    private final HashMap<Quartet, Double> getScoreCache;
+    private final HashMap<Triplet, Double> getScoreCache;
 
     @Inject
     public LogisticModelProvider(@Transient LogisticTrainingSplit split,
@@ -84,12 +80,12 @@ public class LogisticModelProvider implements Provider<LogisticModel> {
         ratingSummary = rs;
         parameterCount = 1 + recommenders.getRecommenderCount() + 1;
         random = rng;
-        getScoreCache = new HashMap<Quartet, Double>();
+        getScoreCache = new HashMap<>();
 
     }
 
-    public double getScore(int recommender_index, long user_id, long item_id, double baseline_bias) {
-        Quartet tuple_values = new Quartet(recommender_index, user_id, item_id, baseline_bias);
+    public double getScore(int recommender_index, long user_id, long item_id) {
+        Triplet tuple_values = new Triplet(recommender_index, user_id, item_id);
         if (getScoreCache.containsKey(tuple_values )) {
 //            System.out.println("Found key in cache.");
             return getScoreCache.get(tuple_values);
@@ -98,6 +94,8 @@ public class LogisticModelProvider implements Provider<LogisticModel> {
 //        System.out.println("Key not found in cache.");
 
         if (recommenders.getItemScorers().get(recommender_index).score(user_id, item_id) != null) {
+            double baseline_bias = baseline.getIntercept() + baseline.getItemBias(item_id) +
+                    baseline.getUserBias(user_id);
             double model_score = recommenders.getItemScorers().get(recommender_index).score(user_id, item_id).getScore()
                     - baseline_bias;
 
@@ -141,7 +139,15 @@ public class LogisticModelProvider implements Provider<LogisticModel> {
 
                 double linear_out = intercept + params[0] * baseline_bias + params[1] * log_popularity;
                 for (int j = 2; j < params.length; j++) {
-                    linear_out += getScore(j-2, user_id, item_id, baseline_bias);
+/*
+                    long start = System.nanoTime();
+                    System.out.println("First getScore: " + getScore(j-2, user_id, item_id, baseline_bias) +
+                            " calculated in " + (System.nanoTime() - start) + " ns.");
+                    start = System.nanoTime();
+                    System.out.println("Second getScore: " + getScore(j-2, user_id, item_id, baseline_bias) +
+                            " calculated in " + (System.nanoTime() - start) + " ns.");
+ */
+                    linear_out += getScore(j-2, user_id, item_id);
                 }
 
                 double activation_out = LogisticModel.sigmoid(-y_ui * linear_out);
@@ -150,7 +156,7 @@ public class LogisticModelProvider implements Provider<LogisticModel> {
                 params[0] += LEARNING_RATE * y_ui * baseline_bias;
                 params[1] += LEARNING_RATE * y_ui * log_popularity;
                 for (int j = 2; j < params.length; j++) {
-                    params[j] += LEARNING_RATE * y_ui * getScore(j-2, user_id, item_id, baseline_bias) * activation_out;
+                    params[j] += LEARNING_RATE * y_ui * getScore(j-2, user_id, item_id) * activation_out;
                 }
             }
 
