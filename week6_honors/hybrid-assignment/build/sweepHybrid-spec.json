@@ -1,0 +1,46 @@
+{
+    "output_file": "sweep-results.csv",
+    "user_output_file": "sweep-users.csv",
+    "cache_directory": "eval-cache",
+    "thread_count": 0,
+    "share_model_components": true,
+    "datasets": [
+        "crossfold.out/datasets.yaml"
+    ],
+    "algorithms": {
+        "ii": "../cfg/ii.groovy",
+        "svd": "../cfg/svd.groovy",
+        "hybridsweep": "../cfg/hybridsweep.groovy",
+        "lucene": "../cfg/lucene.groovy"
+    },
+    "tasks": [
+        {
+            "type": "predict",
+            "output_file": null,
+            "metrics": [
+                "coverage",
+                "rmse",
+                "ndcg"
+            ]
+        },
+        {
+            "type": "recommend",
+            "output_file": null,
+            "metrics": [
+                "ndcg",
+                {
+                    "type": "map",
+                    "goodItems": "user.testItems"
+                },
+                {
+                    "type": "mrr",
+                    "goodItems": "user.testItems"
+                }
+            ],
+            "list_size": 25,
+            "candidates": "allItems",
+            "exclude": "user.trainItems",
+            "label_prefix": null
+        }
+    ]
+}
