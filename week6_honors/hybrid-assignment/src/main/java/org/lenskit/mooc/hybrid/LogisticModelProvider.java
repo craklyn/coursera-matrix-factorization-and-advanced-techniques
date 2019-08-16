@@ -1,5 +1,7 @@
 package org.lenskit.mooc.hybrid;
 
+import org.apache.commons.math3.linear.ArrayRealVector;
+import org.apache.commons.math3.linear.RealVector;
 import org.lenskit.api.ItemScorer;
 import org.lenskit.api.Result;
 import org.lenskit.bias.BiasModel;
@@ -7,14 +9,15 @@ import org.lenskit.bias.UserBiasModel;
 import org.lenskit.data.ratings.Rating;
 import org.lenskit.data.ratings.RatingSummary;
 import org.lenskit.inject.Transient;
-import org.lenskit.util.ProgressLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.inject.Inject;
 import javax.inject.Provider;
-import java.util.*;
-import java.util.concurrent.TimeUnit;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Random;
 
 class Triplet {
     int i;
@@ -67,6 +70,8 @@ public class LogisticModelProvider implements Provider<LogisticModel> {
     private final int parameterCount;
     private final Random random;
     private final HashMap<Triplet, Double> getScoreCache;
+    private int cache_lookup_count;
+    private int cache_not_found_count;
 
     @Inject
     public LogisticModelProvider(@Transient LogisticTrainingSplit split,
@@ -81,23 +86,25 @@ public class LogisticModelProvider implements Provider<LogisticModel> {
         parameterCount = 1 + recommenders.getRecommenderCount() + 1;
         random = rng;
         getScoreCache = new HashMap<>();
+        cache_lookup_count = 0;
+        cache_not_found_count = 0;
 
     }
 
     public double getScore(int recommender_index, long user_id, long item_id) {
         Triplet tuple_values = new Triplet(recommender_index, user_id, item_id);
         if (getScoreCache.containsKey(tuple_values )) {
-//            System.out.println("Found key in cache.");
+            cache_lookup_count += 1;
             return getScoreCache.get(tuple_values);
         }
 
-//        System.out.println("Key not found in cache.");
+        cache_not_found_count += 1;
 
         if (recommenders.getItemScorers().get(recommender_index).score(user_id, item_id) != null) {
-            double baseline_bias = baseline.getIntercept() + baseline.getItemBias(item_id) +
+            double bias_ui = baseline.getIntercept() + baseline.getItemBias(item_id) +
                     baseline.getUserBias(user_id);
             double model_score = recommenders.getItemScorers().get(recommender_index).score(user_id, item_id).getScore()
-                    - baseline_bias;
+                    - bias_ui;
 
             getScoreCache.put(tuple_values, model_score);
             return model_score;
@@ -109,13 +116,24 @@ public class LogisticModelProvider implements Provider<LogisticModel> {
         }
     }
 
+    public double getScore_noCache(int recommender_index, long user_id, long item_id) {
+        if (recommenders.getItemScorers().get(recommender_index).score(user_id, item_id) != null) {
+            double bias_ui = baseline.getIntercept() + baseline.getItemBias(item_id) +
+                    baseline.getUserBias(user_id);
+            double model_score = recommenders.getItemScorers().get(recommender_index).score(user_id, item_id).getScore()
+                    - bias_ui;
+            return model_score;
+        }
+        else {
+            return 0.;
+        }
+    }
 
     @Override
     public LogisticModel get() {
         List<ItemScorer> scorers = recommenders.getItemScorers();
         double intercept = 0;
         double[] params = new double[parameterCount];
-
         LogisticModel current = LogisticModel.create(intercept, params);
 
         // My code:
@@ -133,35 +151,46 @@ public class LogisticModelProvider implements Provider<LogisticModel> {
                 long item_id = rating.getItemId();
 
                 double y_ui = rating.getValue();
-                double baseline_bias = baseline.getIntercept() + baseline.getItemBias(item_id) +
-                        baseline.getUserBias(user_id);
-                double log_popularity = Math.log(ratingSummary.getItemRatingCount(item_id));
 
-                double linear_out = intercept + params[0] * baseline_bias + params[1] * log_popularity;
+                RealVector X = new ArrayRealVector(parameterCount);
+
+                double bias_ui = baseline.getIntercept() + baseline.getItemBias(item_id) +
+                        baseline.getUserBias(user_id);
+                X.setEntry(0, bias_ui);
+
+                double log_popularity = Math.log(ratingSummary.getItemRatingCount(item_id));
+                X.setEntry(1, log_popularity);
+
+
                 for (int j = 2; j < params.length; j++) {
-/*
-                    long start = System.nanoTime();
-                    System.out.println("First getScore: " + getScore(j-2, user_id, item_id, baseline_bias) +
-                            " calculated in " + (System.nanoTime() - start) + " ns.");
-                    start = System.nanoTime();
-                    System.out.println("Second getScore: " + getScore(j-2, user_id, item_id, baseline_bias) +
-                            " calculated in " + (System.nanoTime() - start) + " ns.");
- */
-                    linear_out += getScore(j-2, user_id, item_id);
+                    X.setEntry(j, getScore(j-2, user_id, item_id));
                 }
 
-                double activation_out = LogisticModel.sigmoid(-y_ui * linear_out);
+                double activation_out = current.evaluate(-y_ui, X);
 
                 intercept += LEARNING_RATE * y_ui * activation_out;
-                params[0] += LEARNING_RATE * y_ui * baseline_bias;
-                params[1] += LEARNING_RATE * y_ui * log_popularity;
-                for (int j = 2; j < params.length; j++) {
-                    params[j] += LEARNING_RATE * y_ui * getScore(j-2, user_id, item_id) * activation_out;
+                for (int j = 0; j < parameterCount; j++){
+                    params[j] += LEARNING_RATE * y_ui * X.getEntry(j) * activation_out;
                 }
+
+                current = LogisticModel.create(intercept, params);
             }
 
-            current = LogisticModel.create(intercept, params);
+            /*
+            System.out.print(intercept + " ");
+            for(int j=0; j<params.length; j++){
+                System.out.print(params[j] + " ");
+            }
+            System.out.println("");
+
+             */
         }
+
+        /*
+        System.out.println("Number of cache not founds / new cache items: " + cache_not_found_count);
+        System.out.println("Number of cache lookups: " + cache_lookup_count);
+        System.out.println("getScoreCache size: " + getScoreCache.size());
+         */
 
         return current;
     }
